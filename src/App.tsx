@@ -26,6 +26,7 @@ import { DeletePasswordModal } from './components/DeletePasswordModal';
 import { AddSuccessModal } from './components/AddSuccessModal';
 import { WhatsAppApprovalModal } from './components/WhatsAppApprovalModal';
 import { IncomingApprovalModal } from './components/IncomingApprovalModal';
+import { ResetConfirmModal } from './components/ResetConfirmModal';
 import {
   collection,
   onSnapshot,
@@ -59,7 +60,7 @@ export default function App() {
     } catch {
       // ignore
     }
-    return INITIAL_EXPENSES;
+    return [];
   });
 
   const [isCloudSynced, setIsCloudSynced] = useState<boolean>(false);
@@ -78,6 +79,7 @@ export default function App() {
   const [justAddedExpense, setJustAddedExpense] = useState<Expense | null>(null);
   const [pendingWhatsAppExpense, setPendingWhatsAppExpense] = useState<Expense | null>(null);
   const [incomingApprovalExpense, setIncomingApprovalExpense] = useState<Expense | null>(null);
+  const [isResetModalOpen, setIsResetModalOpen] = useState<boolean>(false);
 
   // Rohit's WhatsApp Phone Number (Pre-configured default: 7065067030)
   const [rohitPhone, setRohitPhone] = useState<string>(() => {
@@ -140,15 +142,13 @@ export default function App() {
             // ignore
           }
         } else {
-          // If Firestore is brand new/empty, seed initial sample expenses
-          const batch = writeBatch(db);
-          INITIAL_EXPENSES.forEach((exp) => {
-            const docRef = doc(db, 'expenses', exp.id);
-            batch.set(docRef, { ...exp, status: 'approved', createdAt: Date.now() });
-          });
-          batch.commit().catch((err) => {
-            handleFirestoreError(err, OperationType.WRITE, 'expenses');
-          });
+          // When collection is empty (e.g. after Reset to 0), set expenses to empty array
+          setExpenses([]);
+          try {
+            localStorage.setItem(STORAGE_EXPENSES_KEY, JSON.stringify([]));
+          } catch {
+            // ignore
+          }
         }
       },
       (error) => {
@@ -316,26 +316,32 @@ export default function App() {
     }
   };
 
-  // Reset to initial sample data
-  const handleReset = async () => {
-    const entered = prompt('Enter password to reset expenses:');
-    if (entered === '123225') {
-      try {
-        const snap = await getDocs(collection(db, 'expenses'));
+  // Open password modal to reset all expenses to 0
+  const handleOpenResetModal = () => {
+    setIsResetModalOpen(true);
+  };
+
+  // Confirmed reset to 0: deletes all expenses from Firestore & sets balances to 0
+  const handleConfirmResetToZero = async () => {
+    setIsResetModalOpen(false);
+    setExpenses([]);
+    setActiveAccount('rohit');
+    try {
+      localStorage.setItem(STORAGE_EXPENSES_KEY, JSON.stringify([]));
+    } catch {
+      // ignore
+    }
+    showToast('Saare kharche delete ho gaye! Account 0 balance.');
+
+    try {
+      const snap = await getDocs(collection(db, 'expenses'));
+      if (!snap.empty) {
         const batch = writeBatch(db);
         snap.forEach((d) => batch.delete(d.ref));
-        INITIAL_EXPENSES.forEach((initExp) => {
-          const docRef = doc(db, 'expenses', initExp.id);
-          batch.set(docRef, { ...initExp, createdAt: Date.now() });
-        });
         await batch.commit();
-        setActiveAccount('rohit');
-        showToast('Sample expenses reset in Cloud');
-      } catch (err) {
-        handleFirestoreError(err, OperationType.WRITE, 'expenses');
       }
-    } else if (entered !== null) {
-      showToast('Incorrect password! Reset cancelled.');
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, 'expenses');
     }
   };
 
@@ -411,12 +417,13 @@ export default function App() {
             </button>
 
             <button
-              id="reset-sample-btn"
-              onClick={handleReset}
-              className="p-2 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900 rounded-xl border border-transparent hover:border-zinc-800 transition-colors"
-              title="Reset Sample Expenses"
+              id="reset-expenses-btn"
+              onClick={handleOpenResetModal}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-xl bg-zinc-900 hover:bg-rose-950/40 text-zinc-400 hover:text-rose-300 border border-zinc-800 hover:border-rose-800/40 transition-colors shadow-xs"
+              title="Reset All Expenses to ₹0"
             >
-              <RotateCcw className="w-4 h-4" />
+              <RotateCcw className="w-3.5 h-3.5" />
+              <span>Reset to ₹0</span>
             </button>
           </div>
         </header>
@@ -867,6 +874,13 @@ export default function App() {
         payerName={
           roommates.find((r) => r.id === incomingApprovalExpense?.paidById)?.name || 'Roommate'
         }
+      />
+
+      {/* Reset to 0 Security Confirmation Modal */}
+      <ResetConfirmModal
+        isOpen={isResetModalOpen}
+        onClose={() => setIsResetModalOpen(false)}
+        onConfirm={handleConfirmResetToZero}
       />
     </div>
   );
