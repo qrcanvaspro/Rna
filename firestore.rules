@@ -1,0 +1,39 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Default-deny catch-all to prevent unauthorized access to undeclared collections
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Helper to validate document IDs
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    // Validation helper for shared room expense
+    function isValidExpense(data) {
+      return data.keys().hasAll(['title', 'amount', 'paidById', 'date'])
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 200
+        && data.amount is number && data.amount >= 0 && data.amount <= 10000000
+        && data.paidById in ['rohit', 'nitish', 'arpit']
+        && data.date is string && data.date.size() <= 30
+        && (!('category' in data) || (data.category is string && data.category.size() <= 100))
+        && (!('notes' in data) || (data.notes is string && data.notes.size() <= 500))
+        && (!('receiptFileName' in data) || (data.receiptFileName is string && data.receiptFileName.size() <= 255))
+        && (!('receiptUrl' in data) || (data.receiptUrl is string && data.receiptUrl.size() <= 1000000))
+        && (!('status' in data) || (data.status in ['approved', 'pending', 'rejected']))
+        && (!('createdAt' in data) || data.createdAt is number);
+    }
+
+    // Shared expenses collection for Rohit, Nitish, and Arpit
+    match /expenses/{expenseId} {
+      allow get: if isValidId(expenseId);
+      allow list: if true;
+      allow create: if isValidId(expenseId) && isValidExpense(request.resource.data);
+      allow update: if isValidId(expenseId) && isValidExpense(request.resource.data);
+      allow delete: if isValidId(expenseId);
+    }
+  }
+}

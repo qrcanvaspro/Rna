@@ -16,6 +16,8 @@ export interface Expense {
   receiptUrl?: string;
   receiptFileName?: string;
   notes?: string;
+  status?: 'approved' | 'pending' | 'rejected';
+  createdAt?: number;
 }
 
 export interface Settlement {

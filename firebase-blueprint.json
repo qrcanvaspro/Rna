@@ -1,0 +1,72 @@
+{
+  "entities": {
+    "expense": {
+      "title": "Expense",
+      "description": "A shared room expense item paid by Rohit, Nitish, or Arpit",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique identifier of the expense",
+          "maxLength": 128
+        },
+        "title": {
+          "type": "string",
+          "description": "Title or description of the purchased item",
+          "maxLength": 200,
+          "minLength": 1
+        },
+        "amount": {
+          "type": "number",
+          "description": "Total amount paid in Indian Rupees (INR)"
+        },
+        "paidById": {
+          "type": "string",
+          "description": "ID of roommate who paid (rohit, nitish, or arpit)",
+          "enum": ["rohit", "nitish", "arpit"]
+        },
+        "date": {
+          "type": "string",
+          "description": "Date of expense formatted as YYYY-MM-DD",
+          "maxLength": 30
+        },
+        "category": {
+          "type": "string",
+          "description": "Category of the expense",
+          "maxLength": 100
+        },
+        "receiptUrl": {
+          "type": "string",
+          "description": "Optional base64 or photo URL of the bill/receipt",
+          "maxLength": 1000000
+        },
+        "receiptFileName": {
+          "type": "string",
+          "description": "Optional original filename of the receipt",
+          "maxLength": 255
+        },
+        "notes": {
+          "type": "string",
+          "description": "Optional notes or details about the expense",
+          "maxLength": 500
+        },
+        "status": {
+          "type": "string",
+          "description": "Approval status of expense: approved, pending, or rejected",
+          "enum": ["approved", "pending", "rejected"]
+        },
+        "createdAt": {
+          "type": "number",
+          "description": "Timestamp in milliseconds when created"
+        }
+      },
+      "required": ["title", "amount", "paidById", "date"]
+    }
+  },
+  "firestore": {
+    "/expenses/{expenseId}": {
+      "schema": "expense",
+      "description": "Collection storing shared expenses accessible by Rohit, Nitish, and Arpit"
+    }
+  }
+}

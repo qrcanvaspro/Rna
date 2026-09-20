@@ -18,16 +18,37 @@ import {
   Calendar,
   User,
   ShoppingBag,
+  Cloud,
+  ShieldAlert,
+  Clock,
 } from 'lucide-react';
 import { DeletePasswordModal } from './components/DeletePasswordModal';
 import { AddSuccessModal } from './components/AddSuccessModal';
+import { WhatsAppApprovalModal } from './components/WhatsAppApprovalModal';
+import { IncomingApprovalModal } from './components/IncomingApprovalModal';
+import {
+  collection,
+  onSnapshot,
+  setDoc,
+  doc,
+  deleteDoc,
+  getDocs,
+  writeBatch,
+} from 'firebase/firestore';
+import {
+  db,
+  testConnection,
+  handleFirestoreError,
+  OperationType,
+} from './firebase';
 
 const STORAGE_EXPENSES_KEY = 'roommate_dark_expenses_v1';
+const STORAGE_ROHIT_PHONE_KEY = 'rohit_room_whatsapp';
 
 export default function App() {
   const roommates = DEFAULT_ROOMMATES;
 
-  // Expenses state
+  // Expenses state with localStorage initial fallback
   const [expenses, setExpenses] = useState<Expense[]>(() => {
     try {
       const saved = localStorage.getItem(STORAGE_EXPENSES_KEY);
@@ -41,6 +62,8 @@ export default function App() {
     return INITIAL_EXPENSES;
   });
 
+  const [isCloudSynced, setIsCloudSynced] = useState<boolean>(false);
+
   // Form input states
   const [title, setTitle] = useState('');
   const [amount, setAmount] = useState('');
@@ -53,12 +76,108 @@ export default function App() {
   // Modals state
   const [expenseToDelete, setExpenseToDelete] = useState<Expense | null>(null);
   const [justAddedExpense, setJustAddedExpense] = useState<Expense | null>(null);
+  const [pendingWhatsAppExpense, setPendingWhatsAppExpense] = useState<Expense | null>(null);
+  const [incomingApprovalExpense, setIncomingApprovalExpense] = useState<Expense | null>(null);
+
+  // Rohit's WhatsApp Phone Number (Pre-configured default: 7065067030)
+  const [rohitPhone, setRohitPhone] = useState<string>(() => {
+    try {
+      return localStorage.getItem(STORAGE_ROHIT_PHONE_KEY) || '7065067030';
+    } catch {
+      return '7065067030';
+    }
+  });
+
+  const handleSaveRohitPhone = (num: string) => {
+    setRohitPhone(num);
+    try {
+      localStorage.setItem(STORAGE_ROHIT_PHONE_KEY, num);
+    } catch {
+      // ignore
+    }
+  };
 
   // Feedback notification & share status
   const [toast, setToast] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
-  // Sync expenses to local storage
+  // Probe Firestore on boot
+  useEffect(() => {
+    testConnection();
+  }, []);
+
+  // Real-time Firestore sync across all phones
+  useEffect(() => {
+    const expensesCol = collection(db, 'expenses');
+    const unsubscribe = onSnapshot(
+      expensesCol,
+      (snapshot) => {
+        setIsCloudSynced(true);
+        if (!snapshot.empty) {
+          const items: Expense[] = [];
+          snapshot.forEach((d) => {
+            const data = d.data();
+            items.push({
+              id: d.id,
+              title: data.title || '',
+              amount: Number(data.amount) || 0,
+              paidById: data.paidById || 'rohit',
+              date: data.date || '',
+              category: data.category || 'General',
+              receiptUrl: data.receiptUrl,
+              receiptFileName: data.receiptFileName,
+              notes: data.notes,
+              status: data.status || 'approved',
+              createdAt: data.createdAt,
+            });
+          });
+          // Sort newest date / id first
+          items.sort((a, b) => (b.date > a.date ? 1 : b.date < a.date ? -1 : 0));
+          setExpenses(items);
+          try {
+            localStorage.setItem(STORAGE_EXPENSES_KEY, JSON.stringify(items));
+          } catch {
+            // ignore
+          }
+        } else {
+          // If Firestore is brand new/empty, seed initial sample expenses
+          const batch = writeBatch(db);
+          INITIAL_EXPENSES.forEach((exp) => {
+            const docRef = doc(db, 'expenses', exp.id);
+            batch.set(docRef, { ...exp, status: 'approved', createdAt: Date.now() });
+          });
+          batch.commit().catch((err) => {
+            handleFirestoreError(err, OperationType.WRITE, 'expenses');
+          });
+        }
+      },
+      (error) => {
+        setIsCloudSynced(false);
+        handleFirestoreError(error, OperationType.LIST, 'expenses');
+      }
+    );
+
+    return () => unsubscribe();
+  }, []);
+
+  // Check URL for WhatsApp direct approval link (?approve=EXP_ID)
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const approveId = params.get('approve');
+    if (approveId && expenses.length > 0) {
+      const found = expenses.find((e) => e.id === approveId);
+      if (found) {
+        if (found.status === 'approved') {
+          showToast(`"${found.title}" pehle se approved hai!`);
+          window.history.replaceState({}, document.title, window.location.pathname);
+        } else {
+          setIncomingApprovalExpense(found);
+        }
+      }
+    }
+  }, [expenses]);
+
+  // Sync expenses to local storage as offline cache
   useEffect(() => {
     try {
       localStorage.setItem(STORAGE_EXPENSES_KEY, JSON.stringify(expenses));
@@ -77,12 +196,66 @@ export default function App() {
     return calculateSplits(roommates, expenses);
   }, [roommates, expenses]);
 
-  // Add new expense
-  const handleAddExpense = (e: FormEvent) => {
+  // List of items awaiting Rohit's approval
+  const pendingExpenses = useMemo(() => {
+    return expenses.filter((e) => e.status === 'pending');
+  }, [expenses]);
+
+  // Approve expense action
+  const handleApproveExpense = async (exp: Expense) => {
+    const updated: Expense = { ...exp, status: 'approved' };
+    setExpenses((prev) => prev.map((e) => (e.id === exp.id ? updated : e)));
+    setIncomingApprovalExpense(null);
+    if (window.location.search.includes('approve=')) {
+      window.history.replaceState({}, document.title, window.location.pathname);
+    }
+    showToast(`Approved "${exp.title}" - Total me jud gaya!`);
+
+    try {
+      await setDoc(
+        doc(db, 'expenses', exp.id),
+        {
+          ...updated,
+          updatedAt: Date.now(),
+        },
+        { merge: true }
+      );
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `expenses/${exp.id}`);
+    }
+  };
+
+  // Reject expense action
+  const handleRejectExpense = async (exp: Expense) => {
+    const updated: Expense = { ...exp, status: 'rejected' };
+    setExpenses((prev) => prev.map((e) => (e.id === exp.id ? updated : e)));
+    setIncomingApprovalExpense(null);
+    if (window.location.search.includes('approve=')) {
+      window.history.replaceState({}, document.title, window.location.pathname);
+    }
+    showToast(`Rejected "${exp.title}"`);
+
+    try {
+      await setDoc(
+        doc(db, 'expenses', exp.id),
+        {
+          ...updated,
+          updatedAt: Date.now(),
+        },
+        { merge: true }
+      );
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `expenses/${exp.id}`);
+    }
+  };
+
+  // Add new expense and save to Firestore
+  const handleAddExpense = async (e: FormEvent) => {
     e.preventDefault();
     const parsedAmount = parseFloat(amount);
     if (!title.trim() || isNaN(parsedAmount) || parsedAmount <= 0) return;
 
+    const isRohit = selectedPayer === 'rohit';
     const newExpense: Expense = {
       id: `exp-${Date.now()}`,
       title: title.trim(),
@@ -90,41 +263,77 @@ export default function App() {
       paidById: selectedPayer,
       date: date || new Date().toISOString().split('T')[0],
       category: 'General',
+      status: isRohit ? 'approved' : 'pending',
+      createdAt: Date.now(),
     };
 
+    // Optimistic UI update
     setExpenses((prev) => [newExpense, ...prev]);
 
-    // Automatically switch active account tab to the payer so user sees the addition immediately
+    // Automatically switch active account tab to the payer
     setActiveAccount(selectedPayer);
 
-    // Trigger popup modal for added expense
-    setJustAddedExpense(newExpense);
-
     const payer = roommates.find((r) => r.id === selectedPayer);
-    showToast(`Added to ${payer?.name}'s account: ${formatCurrency(parsedAmount)}`);
+
+    // If Rohit adds: Approved directly! If Nitish/Arpit adds: Show WhatsApp modal
+    if (isRohit) {
+      setJustAddedExpense(newExpense);
+      showToast(`Added to Rohit's account: ${formatCurrency(parsedAmount)}`);
+    } else {
+      setPendingWhatsAppExpense(newExpense);
+      showToast(`Added! Rohit ke WhatsApp par approval link bhejo.`);
+    }
 
     // Reset inputs
     setTitle('');
     setAmount('');
+
+    // Persist to Cloud Database (Firestore)
+    try {
+      await setDoc(doc(db, 'expenses', newExpense.id), {
+        ...newExpense,
+        createdAt: Date.now(),
+      });
+    } catch (err) {
+      handleFirestoreError(err, OperationType.CREATE, `expenses/${newExpense.id}`);
+    }
   };
 
   // Confirmed delete after password validation
-  const handleConfirmDelete = () => {
+  const handleConfirmDelete = async () => {
     if (!expenseToDelete) return;
     const id = expenseToDelete.id;
     const itemTitle = expenseToDelete.title;
     setExpenses((prev) => prev.filter((e) => e.id !== id));
     setExpenseToDelete(null);
     showToast(`Removed "${itemTitle}"`);
+
+    // Delete from Cloud Database (Firestore)
+    try {
+      await deleteDoc(doc(db, 'expenses', id));
+    } catch (err) {
+      handleFirestoreError(err, OperationType.DELETE, `expenses/${id}`);
+    }
   };
 
   // Reset to initial sample data
-  const handleReset = () => {
+  const handleReset = async () => {
     const entered = prompt('Enter password to reset expenses:');
     if (entered === '123225') {
-      setExpenses(INITIAL_EXPENSES);
-      setActiveAccount('rohit');
-      showToast('Sample expenses reset');
+      try {
+        const snap = await getDocs(collection(db, 'expenses'));
+        const batch = writeBatch(db);
+        snap.forEach((d) => batch.delete(d.ref));
+        INITIAL_EXPENSES.forEach((initExp) => {
+          const docRef = doc(db, 'expenses', initExp.id);
+          batch.set(docRef, { ...initExp, createdAt: Date.now() });
+        });
+        await batch.commit();
+        setActiveAccount('rohit');
+        showToast('Sample expenses reset in Cloud');
+      } catch (err) {
+        handleFirestoreError(err, OperationType.WRITE, 'expenses');
+      }
     } else if (entered !== null) {
       showToast('Incorrect password! Reset cancelled.');
     }
@@ -171,9 +380,19 @@ export default function App() {
               <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 shadow-xs shadow-emerald-500/50"></span>
               RNA Room Expenses
             </h1>
-            <p className="text-xs text-zinc-400 mt-0.5">
-              Rohit &bull; Nitish &bull; Arpit &bull; 1/3 Equal Split
-            </p>
+            <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+              <p className="text-xs text-zinc-400">
+                Rohit &bull; Nitish &bull; Arpit &bull; 1/3 Equal Split
+              </p>
+              <span
+                id="cloud-status-badge"
+                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-950/80 border border-emerald-500/30 text-[10px] font-semibold text-emerald-400"
+                title="Real-time Cloud Sync is active across all phones"
+              >
+                <Cloud className="w-3 h-3" />
+                <span>{isCloudSynced ? 'Live Cloud Sync' : 'Connecting...'}</span>
+              </span>
+            </div>
           </div>
 
           <div className="flex items-center gap-2">
@@ -242,6 +461,71 @@ export default function App() {
             </span>
           </div>
         </div>
+
+        {/* 1.5 Pending Approvals Alert for Rohit */}
+        {pendingExpenses.length > 0 && (
+          <div
+            id="pending-approvals-alert-banner"
+            className="bg-amber-950/30 border border-amber-500/40 rounded-2xl p-4 sm:p-5 shadow-lg shadow-amber-950/20 mb-6"
+          >
+            <div className="flex items-center justify-between gap-2 mb-3">
+              <div className="flex items-center gap-2">
+                <span className="w-2.5 h-2.5 rounded-full bg-amber-400 animate-pulse"></span>
+                <h3 className="text-sm font-bold text-amber-200 flex items-center gap-1.5">
+                  <ShieldAlert className="w-4 h-4 text-amber-400" />
+                  <span>Pending Approval Requests ({pendingExpenses.length})</span>
+                </h3>
+              </div>
+              <span className="text-[11px] text-amber-400/90 font-medium">
+                Rohit's verification needed
+              </span>
+            </div>
+
+            <div className="space-y-2">
+              {pendingExpenses.map((pExp) => {
+                const payer =
+                  roommates.find((r) => r.id === pExp.paidById)?.name || pExp.paidById;
+                return (
+                  <div
+                    key={pExp.id}
+                    className="bg-zinc-950/90 border border-amber-500/20 rounded-xl p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5"
+                  >
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-bold text-white">{pExp.title}</span>
+                        <span className="text-xs font-black text-amber-400">
+                          {formatCurrency(pExp.amount)}
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-zinc-400 mt-0.5">
+                        Paid by <strong className="text-zinc-200">{payer}</strong> &bull;{' '}
+                        {pExp.date} &bull; 1/3 share: {formatCurrency(pExp.amount / 3)}
+                      </p>
+                    </div>
+
+                    <div className="flex items-center gap-2 shrink-0">
+                      <button
+                        onClick={() => handleApproveExpense(pExp)}
+                        id={`approve-btn-${pExp.id}`}
+                        className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded-lg transition-colors flex items-center gap-1 shadow-xs active:scale-95"
+                      >
+                        <Check className="w-3.5 h-3.5" />
+                        <span>Approve</span>
+                      </button>
+                      <button
+                        onClick={() => handleRejectExpense(pExp)}
+                        id={`reject-btn-${pExp.id}`}
+                        className="px-2.5 py-1.5 bg-zinc-900 hover:bg-rose-950/50 text-zinc-400 hover:text-rose-300 border border-zinc-800 hover:border-rose-900/50 text-xs font-medium rounded-lg transition-colors active:scale-95"
+                      >
+                        Reject
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
 
         {/* 2. Add New Expense Form */}
         <div
@@ -487,8 +771,21 @@ export default function App() {
                       className="p-3 hover:bg-zinc-900/50 flex items-center justify-between gap-3 transition-colors"
                     >
                       <div className="min-w-0 flex-1">
-                        <div className="text-xs font-semibold text-zinc-200 truncate">
-                          {item.title}
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-semibold text-zinc-200 truncate">
+                            {item.title}
+                          </span>
+                          {item.status === 'pending' && (
+                            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-500/15 text-amber-300 border border-amber-500/30 shrink-0">
+                              <Clock className="w-2.5 h-2.5" />
+                              Pending Approval
+                            </span>
+                          )}
+                          {item.status === 'rejected' && (
+                            <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-rose-500/15 text-rose-300 border border-rose-500/30 shrink-0">
+                              Rejected
+                            </span>
+                          )}
                         </div>
                         <div className="text-[11px] text-zinc-500 mt-0.5">
                           {item.date}
@@ -496,9 +793,18 @@ export default function App() {
                       </div>
 
                       <div className="flex items-center gap-2.5 shrink-0">
-                        <span className="text-xs font-bold text-zinc-100">
+                        <span className={`text-xs font-bold ${item.status === 'pending' ? 'text-amber-400' : item.status === 'rejected' ? 'text-zinc-500 line-through' : 'text-zinc-100'}`}>
                           {formatCurrency(item.amount)}
                         </span>
+                        {item.status === 'pending' && (
+                          <button
+                            onClick={() => handleApproveExpense(item)}
+                            className="p-1 px-2 text-[11px] font-bold bg-emerald-600/90 hover:bg-emerald-500 text-white rounded-lg transition-colors"
+                            title="Approve expense"
+                          >
+                            Approve
+                          </button>
+                        )}
                         <button
                           onClick={() => setExpenseToDelete(item)}
                           className="p-1.5 text-zinc-500 hover:text-rose-400 hover:bg-rose-950/40 rounded-lg transition-colors"
@@ -524,13 +830,42 @@ export default function App() {
         expense={expenseToDelete}
       />
 
-      {/* Expense Added Success Popup Modal */}
+      {/* Expense Added Success Popup Modal (For Rohit's own expenses) */}
       <AddSuccessModal
         isOpen={!!justAddedExpense}
         onClose={() => setJustAddedExpense(null)}
         expense={justAddedExpense}
         payerName={
           roommates.find((r) => r.id === justAddedExpense?.paidById)?.name || 'Roommate'
+        }
+      />
+
+      {/* WhatsApp Approval Modal (When Nitish or Arpit adds an expense) */}
+      <WhatsAppApprovalModal
+        isOpen={!!pendingWhatsAppExpense}
+        onClose={() => setPendingWhatsAppExpense(null)}
+        expense={pendingWhatsAppExpense}
+        payerName={
+          roommates.find((r) => r.id === pendingWhatsAppExpense?.paidById)?.name || 'Roommate'
+        }
+        savedPhone={rohitPhone}
+        onSavePhone={handleSaveRohitPhone}
+      />
+
+      {/* Incoming Approval Modal (When Rohit opens the WhatsApp link with ?approve=ID) */}
+      <IncomingApprovalModal
+        isOpen={!!incomingApprovalExpense}
+        onClose={() => {
+          setIncomingApprovalExpense(null);
+          if (window.location.search.includes('approve=')) {
+            window.history.replaceState({}, document.title, window.location.pathname);
+          }
+        }}
+        onApprove={handleApproveExpense}
+        onReject={handleRejectExpense}
+        expense={incomingApprovalExpense}
+        payerName={
+          roommates.find((r) => r.id === incomingApprovalExpense?.paidById)?.name || 'Roommate'
         }
       />
     </div>

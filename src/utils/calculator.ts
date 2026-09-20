@@ -78,14 +78,18 @@ export function formatCurrency(amount: number): string {
 
 export function calculateSplits(roommates: Roommate[], expenses: Expense[]): SplitCalculationResult {
   const count = 3; // Fixed 3 room partners: Rohit, Nitish, Arpit
-  const totalAmount = expenses.reduce((sum, exp) => sum + (Number(exp.amount) || 0), 0);
+  // Only calculate approved expenses (ignore pending approval or rejected)
+  const approvedExpenses = expenses.filter(
+    (exp) => exp.status !== 'pending' && exp.status !== 'rejected'
+  );
+  const totalAmount = approvedExpenses.reduce((sum, exp) => sum + (Number(exp.amount) || 0), 0);
   const equalShare = totalAmount / count;
 
   // Calculate total paid per roommate
   const paidMap = new Map<string, number>();
   roommates.forEach((r) => paidMap.set(r.id, 0));
 
-  expenses.forEach((exp) => {
+  approvedExpenses.forEach((exp) => {
     const current = paidMap.get(exp.paidById) ?? 0;
     paidMap.set(exp.paidById, current + (Number(exp.amount) || 0));
   });
@@ -176,3 +180,27 @@ export function generateWhatsAppSummary(
 
   return text;
 }
+
+export function generateWhatsAppApprovalMessage(
+  expense: Expense,
+  payerName: string,
+  approvalUrl: string
+): string {
+  let msg = `🔔 *RNA Room Expenses - Approval Request*\n`;
+  msg += `━━━━━━━━━━━━━━━━━━━━━\n`;
+  msg += `Bhai Rohit, maine ek naya kharcha add kiya hai, approval chahiye:\n\n`;
+  msg += `👤 *Khareeda:* ${payerName}\n`;
+  msg += `🛒 *Saman:* ${expense.title}\n`;
+  msg += `💰 *Amount:* ${formatCurrency(expense.amount)}\n`;
+  msg += `📅 *Date:* ${expense.date}\n`;
+  msg += `⚖️ *Har ek ka 1/3 hissa:* ${formatCurrency(expense.amount / 3)}\n`;
+  if (expense.notes) {
+    msg += `📝 *Notes:* ${expense.notes}\n`;
+  }
+  msg += `\n✅ *Approve karne ke liye is link par click karo:*\n`;
+  msg += `${approvalUrl}\n\n`;
+  msg += `_(Link kholte hi yeh kharcha hamare room ke main hisaab me jud jayega)_`;
+
+  return msg;
+}
+
