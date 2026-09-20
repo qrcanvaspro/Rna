@@ -9,10 +9,13 @@ import {
 } from './utils/calculator';
 import {
   PlusCircle,
+  Plus,
   Trash2,
   Share2,
   RotateCcw,
   Check,
+  CheckCheck,
+  Zap,
   Divide,
   Wallet,
   Calendar,
@@ -21,6 +24,8 @@ import {
   Cloud,
   ShieldAlert,
   Clock,
+  Sparkles,
+  X,
 } from 'lucide-react';
 import { DeletePasswordModal } from './components/DeletePasswordModal';
 import { AddSuccessModal } from './components/AddSuccessModal';
@@ -46,6 +51,17 @@ import {
 const STORAGE_EXPENSES_KEY = 'roommate_dark_expenses_v1';
 const STORAGE_ROHIT_PHONE_KEY = 'rohit_room_whatsapp';
 
+const COMMON_PRESETS = [
+  'Sabji & Fruits',
+  'Milk & Bread',
+  'Ration & Groceries',
+  'Water Can',
+  'WiFi Bill',
+  'Bijli Bill',
+  'Gas Cylinder',
+  'Snacks & Tea',
+];
+
 export default function App() {
   const roommates = DEFAULT_ROOMMATES;
 
@@ -65,9 +81,10 @@ export default function App() {
 
   const [isCloudSynced, setIsCloudSynced] = useState<boolean>(false);
 
-  // Form input states
-  const [title, setTitle] = useState('');
-  const [amount, setAmount] = useState('');
+  // Form input states (supports multi-item batch entry)
+  const [itemRows, setItemRows] = useState<{ id: string; name: string; amount: string }[]>([
+    { id: '1', name: '', amount: '' },
+  ]);
   const [selectedPayer, setSelectedPayer] = useState<string>('rohit');
   const [date, setDate] = useState(() => new Date().toISOString().split('T')[0]);
 
@@ -79,6 +96,12 @@ export default function App() {
   const [justAddedExpense, setJustAddedExpense] = useState<Expense | null>(null);
   const [pendingWhatsAppExpense, setPendingWhatsAppExpense] = useState<Expense | null>(null);
   const [incomingApprovalExpense, setIncomingApprovalExpense] = useState<Expense | null>(null);
+  const [autoApprovedNotice, setAutoApprovedNotice] = useState<{
+    title: string;
+    amount: number;
+    payerName: string;
+    itemsCount: number;
+  } | null>(null);
   const [isResetModalOpen, setIsResetModalOpen] = useState<boolean>(false);
 
   // Rohit's WhatsApp Phone Number (Pre-configured default: 7065067030)
@@ -160,15 +183,28 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
-  // Check URL for WhatsApp direct approval link (?approve=EXP_ID)
+  // Check URL for WhatsApp direct approval link (?approve=EXP_ID&auto=1)
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const approveId = params.get('approve');
+    const isAuto = params.get('auto') === '1' || params.get('auto_approve') === 'true';
+
     if (approveId && expenses.length > 0) {
       const found = expenses.find((e) => e.id === approveId);
       if (found) {
         if (found.status === 'approved') {
           showToast(`"${found.title}" pehle se approved hai!`);
+          window.history.replaceState({}, document.title, window.location.pathname);
+        } else if (isAuto) {
+          // Instant 1-Tap Auto-Approve without needing any extra clicks or forms!
+          handleApproveExpense(found, true);
+          const payer = roommates.find((r) => r.id === found.paidById)?.name || found.paidById;
+          setAutoApprovedNotice({
+            title: found.title,
+            amount: found.amount,
+            payerName: payer,
+            itemsCount: found.items?.length || 1,
+          });
           window.history.replaceState({}, document.title, window.location.pathname);
         } else {
           setIncomingApprovalExpense(found);
@@ -201,15 +237,17 @@ export default function App() {
     return expenses.filter((e) => e.status === 'pending');
   }, [expenses]);
 
-  // Approve expense action
-  const handleApproveExpense = async (exp: Expense) => {
+  // Approve expense action (supports silent mode for instant 1-tap WhatsApp link approval)
+  const handleApproveExpense = async (exp: Expense, silent = false) => {
     const updated: Expense = { ...exp, status: 'approved' };
     setExpenses((prev) => prev.map((e) => (e.id === exp.id ? updated : e)));
     setIncomingApprovalExpense(null);
     if (window.location.search.includes('approve=')) {
       window.history.replaceState({}, document.title, window.location.pathname);
     }
-    showToast(`Approved "${exp.title}" - Total me jud gaya!`);
+    if (!silent) {
+      showToast(`Approved "${exp.title}" - Total me jud gaya!`);
+    }
 
     try {
       await setDoc(
@@ -222,6 +260,35 @@ export default function App() {
       );
     } catch (err) {
       handleFirestoreError(err, OperationType.UPDATE, `expenses/${exp.id}`);
+    }
+  };
+
+  // Approve ALL pending expenses at once (Batch Approval)
+  const handleApproveAllPending = async () => {
+    if (pendingExpenses.length === 0) return;
+    const count = pendingExpenses.length;
+    const total = pendingExpenses.reduce((s, e) => s + e.amount, 0);
+
+    // Optimistically update all to approved
+    setExpenses((prev) =>
+      prev.map((e) => (e.status === 'pending' ? { ...e, status: 'approved' } : e))
+    );
+    setIncomingApprovalExpense(null);
+    showToast(`Sabhi ${count} saman ek saath approve ho gaye! (${formatCurrency(total)})`);
+
+    try {
+      const batch = writeBatch(db);
+      pendingExpenses.forEach((exp) => {
+        const docRef = doc(db, 'expenses', exp.id);
+        batch.set(
+          docRef,
+          { ...exp, status: 'approved', updatedAt: Date.now() },
+          { merge: true }
+        );
+      });
+      await batch.commit();
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, 'expenses/batch-approve');
     }
   };
 
@@ -249,22 +316,82 @@ export default function App() {
     }
   };
 
-  // Add new expense and save to Firestore
+  // Multi-item form management
+  const handleAddItemRow = () => {
+    setItemRows((prev) => [
+      ...prev,
+      { id: String(Date.now() + Math.random()), name: '', amount: '' },
+    ]);
+  };
+
+  const handleRemoveItemRow = (id: string) => {
+    if (itemRows.length <= 1) return;
+    setItemRows((prev) => prev.filter((r) => r.id !== id));
+  };
+
+  const handleItemRowChange = (id: string, field: 'name' | 'amount', value: string) => {
+    setItemRows((prev) =>
+      prev.map((r) => (r.id === id ? { ...r, [field]: value } : r))
+    );
+  };
+
+  const handleAddPreset = (presetName: string) => {
+    setItemRows((prev) => {
+      // If the last row is blank, fill its name
+      const last = prev[prev.length - 1];
+      if (last && !last.name.trim()) {
+        return prev.map((r) => (r.id === last.id ? { ...r, name: presetName } : r));
+      }
+      // Otherwise append new row with this preset
+      return [
+        ...prev,
+        { id: String(Date.now() + Math.random()), name: presetName, amount: '' },
+      ];
+    });
+  };
+
+  // Live calculation of items in form
+  const validItemRows = useMemo(() => {
+    return itemRows.filter((r) => {
+      const parsed = parseFloat(r.amount);
+      return r.name.trim().length > 0 && !isNaN(parsed) && parsed > 0;
+    });
+  }, [itemRows]);
+
+  const totalCalculatedFormAmount = useMemo(() => {
+    return validItemRows.reduce((sum, r) => sum + parseFloat(r.amount), 0);
+  }, [validItemRows]);
+
+  // Add new expense (single or batch of items) and save to Firestore
   const handleAddExpense = async (e: FormEvent) => {
     e.preventDefault();
-    const parsedAmount = parseFloat(amount);
-    if (!title.trim() || isNaN(parsedAmount) || parsedAmount <= 0) return;
+
+    if (validItemRows.length === 0) {
+      showToast('Kripya kam se kam 1 saman aur price dalein!');
+      return;
+    }
 
     const isRohit = selectedPayer === 'rohit';
+    const hasMultiple = validItemRows.length > 1;
+
+    // Combined title for quick scanning: e.g. "Dudh, Sabji, Bread"
+    const combinedTitle = validItemRows.map((r) => r.name.trim()).join(', ');
+
+    const itemsData = validItemRows.map((r) => ({
+      name: r.name.trim(),
+      amount: parseFloat(r.amount),
+    }));
+
     const newExpense: Expense = {
       id: `exp-${Date.now()}`,
-      title: title.trim(),
-      amount: parsedAmount,
+      title: combinedTitle,
+      amount: totalCalculatedFormAmount,
       paidById: selectedPayer,
       date: date || new Date().toISOString().split('T')[0],
       category: 'General',
       status: isRohit ? 'approved' : 'pending',
       createdAt: Date.now(),
+      items: itemsData,
     };
 
     // Optimistic UI update
@@ -273,20 +400,25 @@ export default function App() {
     // Automatically switch active account tab to the payer
     setActiveAccount(selectedPayer);
 
-    const payer = roommates.find((r) => r.id === selectedPayer);
-
     // If Rohit adds: Approved directly! If Nitish/Arpit adds: Show WhatsApp modal
     if (isRohit) {
       setJustAddedExpense(newExpense);
-      showToast(`Added to Rohit's account: ${formatCurrency(parsedAmount)}`);
+      showToast(
+        hasMultiple
+          ? `${validItemRows.length} Saman added to Rohit's account: ${formatCurrency(totalCalculatedFormAmount)}`
+          : `Added to Rohit's account: ${formatCurrency(totalCalculatedFormAmount)}`
+      );
     } else {
       setPendingWhatsAppExpense(newExpense);
-      showToast(`Added! Rohit ke WhatsApp par approval link bhejo.`);
+      showToast(
+        hasMultiple
+          ? `${validItemRows.length} Saman added! Rohit ke WhatsApp par approval bhejo.`
+          : 'Added! Rohit ke WhatsApp par approval link bhejo.'
+      );
     }
 
-    // Reset inputs
-    setTitle('');
-    setAmount('');
+    // Reset rows to 1 empty item
+    setItemRows([{ id: String(Date.now()), name: '', amount: '' }]);
 
     // Persist to Cloud Database (Firestore)
     try {
@@ -469,48 +601,120 @@ export default function App() {
           </div>
         </div>
 
+        {/* 1.3 Auto-Approved Notice (Triggered when Rohit clicks WhatsApp 1-tap auto approval link) */}
+        {autoApprovedNotice && (
+          <div
+            id="auto-approved-notice-banner"
+            className="bg-emerald-950/80 border border-emerald-500/50 rounded-2xl p-4 sm:p-5 shadow-xl shadow-emerald-950/50 mb-6 flex items-start justify-between gap-3 animate-in slide-in-from-top duration-200"
+          >
+            <div className="flex items-start gap-3">
+              <div className="w-10 h-10 rounded-xl bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 flex items-center justify-center shrink-0 shadow-sm">
+                <CheckCheck className="w-5 h-5" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] font-extrabold uppercase tracking-wider text-emerald-300 bg-emerald-900/80 border border-emerald-500/40 px-2 py-0.5 rounded-md">
+                    ⚡ 1-Tap Auto-Approved!
+                  </span>
+                  <span className="text-xs text-zinc-400">WhatsApp Link se Live Approve Hua</span>
+                </div>
+                <h3 className="text-sm sm:text-base font-extrabold text-white mt-1">
+                  {autoApprovedNotice.payerName} ka saman hisaab me jud gaya!
+                </h3>
+                <p className="text-xs text-emerald-300/90 mt-0.5">
+                  <strong>{autoApprovedNotice.title}</strong> &bull; Total: {formatCurrency(autoApprovedNotice.amount)} &bull; 1/3 hissa: {formatCurrency(autoApprovedNotice.amount / 3)} / person
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={() => setAutoApprovedNotice(null)}
+              className="p-1 text-zinc-400 hover:text-white rounded-lg hover:bg-zinc-800 transition-colors shrink-0"
+              title="Close notification"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        )}
+
         {/* 1.5 Pending Approvals Alert for Rohit */}
         {pendingExpenses.length > 0 && (
           <div
             id="pending-approvals-alert-banner"
             className="bg-amber-950/30 border border-amber-500/40 rounded-2xl p-4 sm:p-5 shadow-lg shadow-amber-950/20 mb-6"
           >
-            <div className="flex items-center justify-between gap-2 mb-3">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-3.5 pb-3 border-b border-amber-500/20">
               <div className="flex items-center gap-2">
                 <span className="w-2.5 h-2.5 rounded-full bg-amber-400 animate-pulse"></span>
-                <h3 className="text-sm font-bold text-amber-200 flex items-center gap-1.5">
-                  <ShieldAlert className="w-4 h-4 text-amber-400" />
-                  <span>Pending Approval Requests ({pendingExpenses.length})</span>
-                </h3>
+                <div>
+                  <h3 className="text-sm font-bold text-amber-200 flex items-center gap-1.5">
+                    <ShieldAlert className="w-4 h-4 text-amber-400" />
+                    <span>Pending Approval Requests ({pendingExpenses.length})</span>
+                  </h3>
+                  <p className="text-[11px] text-amber-400/80 mt-0.5">
+                    Total Pending: <strong>{formatCurrency(pendingExpenses.reduce((s, e) => s + e.amount, 0))}</strong> &bull; Rohit verification
+                  </p>
+                </div>
               </div>
-              <span className="text-[11px] text-amber-400/90 font-medium">
-                Rohit's verification needed
-              </span>
+
+              {/* Batch Approve All Button */}
+              <button
+                id="approve-all-pending-btn"
+                onClick={handleApproveAllPending}
+                className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded-xl transition-all flex items-center justify-center gap-1.5 shadow-md shadow-emerald-950/40 active:scale-95 shrink-0"
+              >
+                <Zap className="w-3.5 h-3.5 fill-current text-yellow-300" />
+                <span>⚡ Sabhi Ek Saath Approve Karein ({pendingExpenses.length})</span>
+              </button>
             </div>
 
-            <div className="space-y-2">
+            <div className="space-y-2.5">
               {pendingExpenses.map((pExp) => {
                 const payer =
                   roommates.find((r) => r.id === pExp.paidById)?.name || pExp.paidById;
+                const hasMulti = pExp.items && pExp.items.length > 1;
+
                 return (
                   <div
                     key={pExp.id}
                     className="bg-zinc-950/90 border border-amber-500/20 rounded-xl p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5"
                   >
-                    <div>
-                      <div className="flex items-center gap-2">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2 flex-wrap">
                         <span className="text-xs font-bold text-white">{pExp.title}</span>
                         <span className="text-xs font-black text-amber-400">
                           {formatCurrency(pExp.amount)}
                         </span>
+                        {hasMulti && (
+                          <span className="text-[10px] font-bold bg-amber-500/20 text-amber-300 px-2 py-0.5 rounded-md border border-amber-500/30">
+                            {pExp.items!.length} Saman Ek Saath
+                          </span>
+                        )}
                       </div>
-                      <p className="text-[11px] text-zinc-400 mt-0.5">
-                        Paid by <strong className="text-zinc-200">{payer}</strong> &bull;{' '}
-                        {pExp.date} &bull; 1/3 share: {formatCurrency(pExp.amount / 3)}
+
+                      {/* Multi-item breakdown tags */}
+                      {hasMulti && (
+                        <div className="flex flex-wrap gap-1.5 mt-1.5">
+                          {pExp.items!.map((it, idx) => (
+                            <span
+                              key={idx}
+                              className="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded bg-zinc-900 border border-zinc-800 text-zinc-300"
+                            >
+                              <span>{it.name}:</span>
+                              <strong className="text-amber-300 font-semibold">
+                                {formatCurrency(it.amount)}
+                              </strong>
+                            </span>
+                          ))}
+                        </div>
+                      )}
+
+                      <p className="text-[11px] text-zinc-400 mt-1">
+                        Khareeda: <strong className="text-zinc-200">{payer}</strong> &bull;{' '}
+                        {pExp.date} &bull; 1/3 hissa: <strong>{formatCurrency(pExp.amount / 3)}</strong>
                       </p>
                     </div>
 
-                    <div className="flex items-center gap-2 shrink-0">
+                    <div className="flex items-center gap-2 shrink-0 self-end sm:self-center">
                       <button
                         onClick={() => handleApproveExpense(pExp)}
                         id={`approve-btn-${pExp.id}`}
@@ -534,64 +738,131 @@ export default function App() {
           </div>
         )}
 
-        {/* 2. Add New Expense Form */}
+        {/* 2. Add New Expense Form (Multi-Item Batch Support) */}
         <div
           id="add-expense-card"
           className="bg-zinc-900/90 rounded-2xl p-4 sm:p-5 border border-zinc-800 shadow-sm mb-6"
         >
-          <div className="flex items-center gap-2 mb-3.5">
-            <PlusCircle className="w-4 h-4 text-emerald-400" />
-            <h2 className="text-sm font-bold text-white tracking-tight">
-              Add Expense
-            </h2>
+          <div className="flex items-center justify-between mb-3.5">
+            <div className="flex items-center gap-2">
+              <PlusCircle className="w-4 h-4 text-emerald-400" />
+              <h2 className="text-sm font-bold text-white tracking-tight">
+                Add Expense (1 se zyada saman bhi add karein)
+              </h2>
+            </div>
+            <span className="text-[11px] text-zinc-400 font-medium">
+              Multi-Item Batch Entry
+            </span>
           </div>
 
-          <form onSubmit={handleAddExpense} className="space-y-3.5">
-            {/* Item Name & Amount */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div>
-                <label
-                  htmlFor="item-title-input"
-                  className="block text-xs font-medium text-zinc-400 mb-1"
+          <form onSubmit={handleAddExpense} className="space-y-4">
+            {/* Quick Suggestion Chips */}
+            <div className="flex items-center gap-1.5 overflow-x-auto pb-1 text-xs scrollbar-none">
+              <span className="text-zinc-500 text-[11px] font-semibold whitespace-nowrap flex items-center gap-1">
+                <Sparkles className="w-3 h-3 text-emerald-400" />
+                Quick Add:
+              </span>
+              {COMMON_PRESETS.map((preset) => (
+                <button
+                  key={preset}
+                  type="button"
+                  onClick={() => handleAddPreset(preset)}
+                  className="px-2.5 py-1 bg-zinc-950 hover:bg-emerald-950/40 hover:text-emerald-300 hover:border-emerald-500/40 text-zinc-400 rounded-lg text-xs transition-all border border-zinc-800 whitespace-nowrap"
                 >
-                  Item Name
+                  + {preset}
+                </button>
+              ))}
+            </div>
+
+            {/* Dynamic Item Rows */}
+            <div className="space-y-2.5">
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-semibold text-zinc-300">
+                  Saman ki List aur Price (₹):
                 </label>
-                <input
-                  id="item-title-input"
-                  type="text"
-                  required
-                  placeholder="e.g. Groceries, WiFi, Milk"
-                  value={title}
-                  onChange={(e) => setTitle(e.target.value)}
-                  className="w-full px-3 py-2.5 bg-zinc-950 border border-zinc-800 rounded-xl text-sm font-medium text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 transition-all"
-                />
+                {itemRows.length > 1 && (
+                  <span className="text-[11px] font-bold text-emerald-400 bg-emerald-950/60 border border-emerald-500/30 px-2 py-0.5 rounded-md">
+                    {itemRows.length} Items Total
+                  </span>
+                )}
               </div>
 
-              <div>
-                <label
-                  htmlFor="item-price-input"
-                  className="block text-xs font-medium text-zinc-400 mb-1"
-                >
-                  Price / Amount (₹)
-                </label>
-                <div className="relative">
-                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm font-bold text-zinc-500">
-                    ₹
+              {itemRows.map((row, idx) => (
+                <div key={row.id} className="flex items-center gap-2">
+                  <span className="w-6 h-6 rounded-lg bg-zinc-800 border border-zinc-700 text-zinc-300 text-xs font-bold flex items-center justify-center shrink-0">
+                    {idx + 1}
                   </span>
-                  <input
-                    id="item-price-input"
-                    type="number"
-                    required
-                    step="any"
-                    min="1"
-                    placeholder="0.00"
-                    value={amount}
-                    onChange={(e) => setAmount(e.target.value)}
-                    className="w-full pl-7 pr-3 py-2.5 bg-zinc-950 border border-zinc-800 rounded-xl text-sm font-semibold text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 transition-all"
-                  />
+                  <div className="flex-1">
+                    <input
+                      type="text"
+                      required={idx === 0}
+                      placeholder={idx === 0 ? "Saman ka naam (e.g. Dudh, Sabji, Ration)" : `Saman ${idx + 1} ka naam`}
+                      value={row.name}
+                      onChange={(e) => handleItemRowChange(row.id, 'name', e.target.value)}
+                      className="w-full px-3 py-2.5 bg-zinc-950 border border-zinc-800 rounded-xl text-sm font-medium text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-emerald-500 transition-all"
+                    />
+                  </div>
+                  <div className="w-28 sm:w-36 relative shrink-0">
+                    <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-sm font-bold text-zinc-500">
+                      ₹
+                    </span>
+                    <input
+                      type="number"
+                      step="any"
+                      min="1"
+                      required={idx === 0}
+                      placeholder="0.00"
+                      value={row.amount}
+                      onChange={(e) => handleItemRowChange(row.id, 'amount', e.target.value)}
+                      className="w-full pl-6 pr-2.5 py-2.5 bg-zinc-950 border border-zinc-800 rounded-xl text-sm font-semibold text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-emerald-500 transition-all"
+                    />
+                  </div>
+                  {itemRows.length > 1 && (
+                    <button
+                      type="button"
+                      onClick={() => handleRemoveItemRow(row.id)}
+                      className="p-2 text-zinc-500 hover:text-rose-400 hover:bg-rose-950/30 rounded-xl border border-transparent hover:border-rose-900/40 transition-colors shrink-0"
+                      title="Is saman ko hatayein"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  )}
+                </div>
+              ))}
+
+              {/* Add Another Item Row Button */}
+              <button
+                type="button"
+                id="add-more-items-row-btn"
+                onClick={handleAddItemRow}
+                className="w-full py-2.5 px-3 bg-zinc-950 hover:bg-zinc-800/80 border border-dashed border-zinc-700 hover:border-emerald-500/50 rounded-xl text-xs font-semibold text-emerald-400 hover:text-emerald-300 transition-all flex items-center justify-center gap-1.5 active:scale-[0.99]"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>+ Aur Saman Jodein (Add Another Item)</span>
+              </button>
+            </div>
+
+            {/* Live Calculation Summary Banner */}
+            {totalCalculatedFormAmount > 0 && (
+              <div className="bg-emerald-950/20 border border-emerald-500/30 rounded-xl p-3.5 flex items-center justify-between">
+                <div>
+                  <span className="text-[11px] text-zinc-400 block font-medium">
+                    Total Bill ({validItemRows.length} {validItemRows.length > 1 ? 'Saman' : 'Item'}):
+                  </span>
+                  <span className="text-base font-extrabold text-emerald-400">
+                    {formatCurrency(totalCalculatedFormAmount)}
+                  </span>
+                </div>
+                <div className="text-right">
+                  <span className="text-[11px] text-zinc-400 block font-medium">
+                    1/3 Hissa per person:
+                  </span>
+                  <span className="text-sm font-bold text-emerald-300">
+                    {formatCurrency(totalCalculatedFormAmount / 3)} / person
+                  </span>
                 </div>
               </div>
-            </div>
+            )}
 
             {/* Paid By Selection (Rohit, Nitish, Arpit) */}
             <div>
@@ -647,7 +918,13 @@ export default function App() {
                   className="w-full py-2.5 px-4 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded-xl shadow-sm transition-colors flex items-center justify-center gap-1.5 active:scale-[0.99]"
                 >
                   <Check className="w-4 h-4" />
-                  <span>Add to Account</span>
+                  <span>
+                    {totalCalculatedFormAmount > 0
+                      ? validItemRows.length > 1
+                        ? `${validItemRows.length} Saman (${formatCurrency(totalCalculatedFormAmount)}) Add Karein`
+                        : `Add ${formatCurrency(totalCalculatedFormAmount)} to Account`
+                      : 'Add to Account'}
+                  </span>
                 </button>
               </div>
             </div>
@@ -778,10 +1055,15 @@ export default function App() {
                       className="p-3 hover:bg-zinc-900/50 flex items-center justify-between gap-3 transition-colors"
                     >
                       <div className="min-w-0 flex-1">
-                        <div className="flex items-center gap-2">
-                          <span className="text-xs font-semibold text-zinc-200 truncate">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="text-xs font-semibold text-zinc-200">
                             {item.title}
                           </span>
+                          {item.items && item.items.length > 1 && (
+                            <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-950/60 text-emerald-300 border border-emerald-800/60 shrink-0">
+                              {item.items.length} Saman
+                            </span>
+                          )}
                           {item.status === 'pending' && (
                             <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-500/15 text-amber-300 border border-amber-500/30 shrink-0">
                               <Clock className="w-2.5 h-2.5" />
@@ -794,6 +1076,22 @@ export default function App() {
                             </span>
                           )}
                         </div>
+
+                        {/* Sub-items list if multiple items */}
+                        {item.items && item.items.length > 1 && (
+                          <div className="flex flex-wrap gap-1.5 mt-1">
+                            {item.items.map((it, idx) => (
+                              <span
+                                key={idx}
+                                className="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded bg-zinc-900 border border-zinc-800 text-zinc-300"
+                              >
+                                <span>{it.name}:</span>
+                                <strong className="text-zinc-200">{formatCurrency(it.amount)}</strong>
+                              </span>
+                            ))}
+                          </div>
+                        )}
+
                         <div className="text-[11px] text-zinc-500 mt-0.5">
                           {item.date}
                         </div>

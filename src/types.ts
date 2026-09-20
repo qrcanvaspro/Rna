@@ -6,6 +6,11 @@ export interface Roommate {
   borderColor: string;
 }
 
+export interface ExpenseItem {
+  name: string;
+  amount: number;
+}
+
 export interface Expense {
   id: string;
   title: string;
@@ -18,6 +23,7 @@ export interface Expense {
   notes?: string;
   status?: 'approved' | 'pending' | 'rejected';
   createdAt?: number;
+  items?: ExpenseItem[];
 }
 
 export interface Settlement {

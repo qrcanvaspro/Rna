@@ -27,9 +27,9 @@ export function WhatsAppApprovalModal({
 
   if (!isOpen || !expense) return null;
 
-  // Build the approval URL pointing back to the current website with ?approve=expense.id
+  // Build the approval URL pointing back to the current website with ?approve=expense.id&auto=1 for instant 1-tap approval
   const baseUrl = window.location.origin + window.location.pathname;
-  const approvalUrl = `${baseUrl}?approve=${encodeURIComponent(expense.id)}`;
+  const approvalUrl = `${baseUrl}?approve=${encodeURIComponent(expense.id)}&auto=1`;
 
   const messageText = generateWhatsAppApprovalMessage(expense, payerName, approvalUrl);
 
@@ -58,6 +58,7 @@ export function WhatsAppApprovalModal({
   };
 
   const equalThird = expense.amount / 3;
+  const hasMultipleItems = expense.items && expense.items.length > 1;
 
   return (
     <div
@@ -84,7 +85,7 @@ export function WhatsAppApprovalModal({
           </div>
           <div>
             <h3 className="text-base font-bold text-white tracking-tight">
-              Approval Request Sent
+              {hasMultipleItems ? `${expense.items!.length} Saman Added!` : 'Approval Request Sent'}
             </h3>
             <p className="text-xs text-amber-400/90 font-medium">
               Rohit ke approval ke baad hi hisaab me judega
@@ -94,14 +95,35 @@ export function WhatsAppApprovalModal({
 
         {/* Expense Summary Box */}
         <div className="bg-zinc-950 rounded-xl p-3.5 border border-zinc-800/80 my-3 space-y-2 text-xs">
-          <div className="flex items-center justify-between">
-            <span className="text-zinc-400">Saman / Item:</span>
-            <span className="font-bold text-white truncate max-w-[200px]">{expense.title}</span>
-          </div>
+          {hasMultipleItems ? (
+            <div>
+              <span className="text-[11px] font-semibold text-zinc-400 uppercase tracking-wider block mb-1.5">
+                Saman ki List ({expense.items!.length} items):
+              </span>
+              <div className="space-y-1 bg-zinc-900/60 p-2.5 rounded-lg border border-zinc-800/60 max-h-36 overflow-y-auto">
+                {expense.items!.map((it, idx) => (
+                  <div key={idx} className="flex items-center justify-between text-xs">
+                    <span className="text-zinc-200 truncate pr-2">
+                      <strong className="text-zinc-500 mr-1.5">{idx + 1}.</strong>
+                      {it.name}
+                    </span>
+                    <span className="font-semibold text-amber-300 shrink-0">
+                      {formatCurrency(it.amount)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <div className="flex items-center justify-between">
+              <span className="text-zinc-400">Saman / Item:</span>
+              <span className="font-bold text-white truncate max-w-[200px]">{expense.title}</span>
+            </div>
+          )}
 
-          <div className="flex items-center justify-between">
-            <span className="text-zinc-400">Total Price:</span>
-            <span className="text-sm font-black text-amber-400">
+          <div className="flex items-center justify-between pt-1">
+            <span className="text-zinc-400 font-medium">Total Bill Amount:</span>
+            <span className="text-base font-black text-amber-400">
               {formatCurrency(expense.amount)}
             </span>
           </div>

@@ -22,6 +22,7 @@ export function IncomingApprovalModal({
   if (!isOpen || !expense) return null;
 
   const equalThird = expense.amount / 3;
+  const hasMultipleItems = expense.items && expense.items.length > 1;
 
   return (
     <div
@@ -48,7 +49,7 @@ export function IncomingApprovalModal({
           </div>
           <div>
             <h3 className="text-base font-black text-white tracking-tight">
-              Approve Room Expense?
+              {hasMultipleItems ? `Approve ${expense.items!.length} Items?` : 'Approve Room Expense?'}
             </h3>
             <p className="text-xs text-amber-300/90 font-medium">
               {payerName} ne is saman ko approve karne ke liye bheja hai
@@ -58,15 +59,36 @@ export function IncomingApprovalModal({
 
         {/* Details Box */}
         <div className="bg-zinc-950 rounded-xl p-4 border border-zinc-800 my-3 space-y-2.5 text-xs">
-          <div className="flex items-center justify-between">
-            <span className="text-zinc-400">Saman / Item:</span>
-            <span className="font-bold text-white text-sm truncate max-w-[200px]">
-              {expense.title}
-            </span>
-          </div>
+          {hasMultipleItems ? (
+            <div>
+              <span className="text-[11px] font-semibold text-zinc-400 uppercase tracking-wider block mb-1.5">
+                Saman ki List ({expense.items!.length} items):
+              </span>
+              <div className="space-y-1.5 bg-zinc-900/60 p-2.5 rounded-lg border border-zinc-800/60 max-h-40 overflow-y-auto">
+                {expense.items!.map((it, idx) => (
+                  <div key={idx} className="flex items-center justify-between text-xs">
+                    <span className="text-zinc-200 truncate pr-2">
+                      <strong className="text-zinc-500 mr-1.5">{idx + 1}.</strong>
+                      {it.name}
+                    </span>
+                    <span className="font-semibold text-amber-300 shrink-0">
+                      {formatCurrency(it.amount)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <div className="flex items-center justify-between">
+              <span className="text-zinc-400">Saman / Item:</span>
+              <span className="font-bold text-white text-sm truncate max-w-[200px]">
+                {expense.title}
+              </span>
+            </div>
+          )}
 
-          <div className="flex items-center justify-between">
-            <span className="text-zinc-400">Total Price:</span>
+          <div className="flex items-center justify-between pt-1">
+            <span className="text-zinc-400 font-medium">Total Bill Amount:</span>
             <span className="text-base font-black text-emerald-400">
               {formatCurrency(expense.amount)}
             </span>

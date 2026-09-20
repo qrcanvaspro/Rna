@@ -186,20 +186,34 @@ export function generateWhatsAppApprovalMessage(
   payerName: string,
   approvalUrl: string
 ): string {
-  let msg = `🔔 *RNA Room Expenses - Approval Request*\n`;
+  const hasMultipleItems = expense.items && expense.items.length > 1;
+
+  let msg = `🔔 *RNA Room Expenses - ${hasMultipleItems ? 'Multi-Item' : 'Saman'} Approval Request*\n`;
   msg += `━━━━━━━━━━━━━━━━━━━━━\n`;
-  msg += `Bhai Rohit, maine ek naya kharcha add kiya hai, approval chahiye:\n\n`;
+  msg += `Bhai Rohit, maine ${hasMultipleItems ? `${expense.items!.length} saman khareede hain` : 'kharcha add kiya hai'}, ek saath approval chahiye:\n\n`;
   msg += `👤 *Khareeda:* ${payerName}\n`;
-  msg += `🛒 *Saman:* ${expense.title}\n`;
-  msg += `💰 *Amount:* ${formatCurrency(expense.amount)}\n`;
-  msg += `📅 *Date:* ${expense.date}\n`;
-  msg += `⚖️ *Har ek ka 1/3 hissa:* ${formatCurrency(expense.amount / 3)}\n`;
+  msg += `📅 *Date:* ${expense.date}\n\n`;
+
+  if (hasMultipleItems) {
+    msg += `🛒 *Saman ki List (${expense.items!.length} Items):*\n`;
+    expense.items!.forEach((it, idx) => {
+      msg += `${idx + 1}. ${it.name} — *${formatCurrency(it.amount)}*\n`;
+    });
+    msg += `━━━━━━━━━━━━━━━━━━━━━\n`;
+    msg += `💰 *Total Bill:* ${formatCurrency(expense.amount)}\n`;
+  } else {
+    msg += `🛒 *Saman:* ${expense.title}\n`;
+    msg += `💰 *Price:* ${formatCurrency(expense.amount)}\n`;
+  }
+
+  msg += `⚖️ *Har ek ka 1/3 hissa:* ${formatCurrency(expense.amount / 3)} / person\n`;
   if (expense.notes) {
     msg += `📝 *Notes:* ${expense.notes}\n`;
   }
-  msg += `\n✅ *Approve karne ke liye is link par click karo:*\n`;
+
+  msg += `\n⚡ *1-Tap Instant Auto-Approve Link:*\n`;
   msg += `${approvalUrl}\n\n`;
-  msg += `_(Link kholte hi yeh kharcha hamare room ke main hisaab me jud jayega)_`;
+  msg += `_(Link par bas 1 tap karte hi bina kisi form ke turant live hisaab me jud jayega!)_`;
 
   return msg;
 }
